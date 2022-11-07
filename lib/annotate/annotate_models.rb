@@ -582,12 +582,8 @@ module AnnotateModels
       model_path = file.gsub(/\.rb$/, '')
       model_dir.each { |dir| model_path = model_path.gsub(/^#{dir}/, '').gsub(/^\//, '') }
       begin
-        get_loaded_model(model_path, file) || raise(BadModelFileError.new)
+        get_loaded_model(model_path, file) || raise(BadModelFileError.new(file))
       rescue LoadError
-        if model_path.include?("models/")
-          model_path = model_path.gsub(/models\//, '')
-          retry
-        end
         # this is for non-rails projects, which don't get Rails auto-require magic
         file_path = File.expand_path(file)
         if File.file?(file_path) && Kernel.require(file_path)
@@ -603,6 +599,9 @@ module AnnotateModels
 
     # Retrieve loaded model class
     def get_loaded_model(model_path, file)
+      rails_class = get_rails_class(file)
+      return rails_class if rails_class
+
       unless skip_subdirectory_model_load
         loaded_model_class = get_loaded_model_by_path(model_path)
         return loaded_model_class if loaded_model_class
@@ -631,6 +630,48 @@ module AnnotateModels
                       c.ancestors.respond_to?(:include?) && # to fix FactoryGirl bug, see https://github.com/ctran/annotate_models/pull/82
                       c.ancestors.include?(ActiveRecord::Base)
                   end.detect { |c| ActiveSupport::Inflector.underscore(c.to_s) == model_path }
+    end
+
+    # heavily inspired by Zeitwerk's eager loading
+    # see https://github.com/fxn/zeitwerk/blob/4b1511b3999bb669f1579813fe33df515b3b24d9/lib/zeitwerk/loader/eager_load.rb#L114-L148
+    def get_rails_class(path)
+      return nil unless defined?(Rails)
+
+      loader = Rails.autoloaders.main
+      inflector = loader.inflector
+      abspath = File.expand_path(path)
+      basename = File.basename(abspath, ".rb")
+      base_cname = inflector.camelize(basename, abspath)
+      cnames = [base_cname]
+
+      walk_up(File.dirname(abspath)) do |dir|
+        return if ignored_path?(dir)
+
+        break if loader.root_dirs[dir]
+
+        unless collapse?(dir)
+          basename = File.basename(dir)
+          cnames << inflector.camelize(basename, dir)
+        end
+      end
+
+      ActiveSupport::Inflector.constantize(cnames.reverse.join("::"))
+    end
+
+    def walk_up(abspath)
+      loop do
+        yield abspath
+        abspath, basename = File.split(abspath)
+        break if basename == "/"
+      end
+    end
+
+    def ignored_path?(abspath)
+      Rails.autoloaders.main.ignores?(abspath)
+    end
+
+    def collapse?(abspath)
+      Rails.autoloaders.main.collapse_dirs.include?(abspath)
     end
 
     def parse_options(options = {})
@@ -914,8 +955,12 @@ module AnnotateModels
   end
 
   class BadModelFileError < LoadError
+    def initialize(file)
+      @file = file
+    end
+
     def to_s
-      "file doesn't contain a valid model class"
+      "file '#{@file}' doesn't contain a valid model class"
     end
   end
 end
