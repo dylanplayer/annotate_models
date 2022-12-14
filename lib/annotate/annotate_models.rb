@@ -599,8 +599,8 @@ module AnnotateModels
 
     # Retrieve loaded model class
     def get_loaded_model(model_path, file)
-      rails_class = get_rails_class(file)
-      return rails_class if rails_class
+      zeitwerk_class = get_zeitwerk_class(file)
+      return zeitwerk_class if zeitwerk_class
 
       unless skip_subdirectory_model_load
         loaded_model_class = get_loaded_model_by_path(model_path)
@@ -632,46 +632,13 @@ module AnnotateModels
                   end.detect { |c| ActiveSupport::Inflector.underscore(c.to_s) == model_path }
     end
 
-    # heavily inspired by Zeitwerk's eager loading
-    # see https://github.com/fxn/zeitwerk/blob/4b1511b3999bb669f1579813fe33df515b3b24d9/lib/zeitwerk/loader/eager_load.rb#L114-L148
-    def get_rails_class(path)
+    def get_zeitwerk_class(path)
       return nil unless defined?(Rails)
+      return nil unless Rails.autoloaders.main.is_a?(Zeitwerk::Loader)
 
-      loader = Rails.autoloaders.main
-      inflector = loader.inflector
-      abspath = File.expand_path(path)
-      basename = File.basename(abspath, ".rb")
-      base_cname = inflector.camelize(basename, abspath)
-      cnames = [base_cname]
-
-      walk_up(File.dirname(abspath)) do |dir|
-        return if ignored_path?(dir)
-
-        break if loader.root_dirs[dir]
-
-        unless collapse?(dir)
-          basename = File.basename(dir)
-          cnames << inflector.camelize(basename, dir)
-        end
-      end
-
-      ActiveSupport::Inflector.constantize(cnames.reverse.join("::"))
-    end
-
-    def walk_up(abspath)
-      loop do
-        yield abspath
-        abspath, basename = File.split(abspath)
-        break if basename == "/"
-      end
-    end
-
-    def ignored_path?(abspath)
-      Rails.autoloaders.main.ignores?(abspath)
-    end
-
-    def collapse?(abspath)
-      Rails.autoloaders.main.collapse_dirs.include?(abspath)
+      Rails.autoloaders.main.load_file(path)
+    rescue Zeitwerk::Error
+      nil
     end
 
     def parse_options(options = {})
@@ -960,7 +927,7 @@ module AnnotateModels
     end
 
     def to_s
-      "file '#{@file}' doesn't contain a valid model class"
+      "file doesn't contain a valid model class"
     end
   end
 end
